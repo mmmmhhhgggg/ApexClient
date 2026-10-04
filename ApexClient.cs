@@ -25,8 +25,102 @@ internal static class Apex
     internal static readonly string Assets = Path.Combine(Game, "assets");
     internal static readonly string Runtimes = Path.Combine(Root, "runtime");
     internal const string ManifestUrl = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
-    internal const string LauncherName = "Apex Client";
+    internal const string LauncherName = "Apple Client";
     internal const string LauncherVersion = "1.0.0";
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MemoryStatus
+    {
+        public uint Length;
+        public uint MemoryLoad;
+        public ulong TotalPhysical;
+        public ulong AvailablePhysical;
+        public ulong TotalPageFile;
+        public ulong AvailablePageFile;
+        public ulong TotalVirtual;
+        public ulong AvailableVirtual;
+        public ulong AvailableExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
+
+    internal static int MaximumRamGb
+    {
+        get
+        {
+            MemoryStatus memory = new MemoryStatus { Length = (uint)Marshal.SizeOf(typeof(MemoryStatus)) };
+            if (!GlobalMemoryStatusEx(ref memory))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                    "Nie można odczytać pamięci RAM komputera.");
+            int physicalGb = (int)(memory.TotalPhysical / (1024UL * 1024UL * 1024UL));
+            return Math.Max(2, Math.Min(32, physicalGb - 2));
+        }
+    }
+
+    internal static LauncherPreferences LoadPreferences()
+    {
+        string path = Path.Combine(Root, "launcher-settings.json");
+        LauncherPreferences preferences = new LauncherPreferences();
+        if (!File.Exists(path))
+        {
+            preferences.RamGb = Math.Min(preferences.RamGb, MaximumRamGb);
+            return preferences;
+        }
+
+        Dictionary<string, object> saved = Dict(Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)));
+        preferences.RamGb = Int(saved.ContainsKey("ramGb") ? saved["ramGb"] : null, 4);
+        preferences.Language = Str(saved.ContainsKey("language") ? saved["language"] : null, "pl");
+        preferences.Theme = Str(saved.ContainsKey("theme") ? saved["theme"] : null, "cyan");
+        if (preferences.Language != "pl" && preferences.Language != "en")
+            throw new InvalidDataException("Nieznany język w ustawieniach launchera.");
+        if (preferences.Theme != "cyan" && preferences.Theme != "violet" && preferences.Theme != "light")
+            throw new InvalidDataException("Nieznany motyw w ustawieniach launchera.");
+        preferences.RamGb = Math.Max(2, Math.Min(MaximumRamGb, preferences.RamGb));
+        return preferences;
+    }
+
+    internal static void SavePreferences(LauncherPreferences preferences)
+    {
+        if (preferences == null) throw new ArgumentNullException("preferences");
+        if (preferences.Language != "pl" && preferences.Language != "en")
+            throw new ArgumentException("Nieobsługiwany język launchera.", "preferences");
+        if (preferences.Theme != "cyan" && preferences.Theme != "violet" && preferences.Theme != "light")
+            throw new ArgumentException("Nieobsługiwany motyw launchera.", "preferences");
+        if (preferences.RamGb < 2 || preferences.RamGb > MaximumRamGb)
+            throw new ArgumentOutOfRangeException("preferences", "Przydział pamięci RAM jest poza dozwolonym zakresem.");
+
+        Directory.CreateDirectory(Root);
+        string path = Path.Combine(Root, "launcher-settings.json");
+        string temporary = path + ".tmp";
+        File.WriteAllText(temporary, Json.Serialize(new Dictionary<string, object>
+        {
+            { "ramGb", preferences.RamGb },
+            { "language", preferences.Language },
+            { "theme", preferences.Theme }
+        }), new UTF8Encoding(false));
+        if (File.Exists(path)) File.Replace(temporary, path, null);
+        else File.Move(temporary, path);
+    }
+
+    internal static void SaveModMetadata(string modsDirectory, string filename, string slug,
+        string projectId, string version, string gameVersion, string loader)
+    {
+        string metadataPath = Path.Combine(modsDirectory, filename + ".apple.json");
+        string temporary = metadataPath + ".tmp";
+        File.WriteAllText(temporary, Json.Serialize(new Dictionary<string, object>
+        {
+            { "filename", filename },
+            { "slug", slug },
+            { "projectId", projectId },
+            { "version", version },
+            { "gameVersion", gameVersion },
+            { "loader", loader }
+        }), new UTF8Encoding(false));
+        if (File.Exists(metadataPath)) File.Replace(temporary, metadataPath, null);
+        else File.Move(temporary, metadataPath);
+    }
 
     internal static readonly JavaScriptSerializer Json = new JavaScriptSerializer
     {
@@ -37,6 +131,13 @@ internal static class Apex
     internal static Dictionary<string, object> Dict(object value)
     {
         return value as Dictionary<string, object> ?? new Dictionary<string, object>();
+    }
+
+    internal sealed class LauncherPreferences
+    {
+        internal int RamGb = 4;
+        internal string Language = "pl";
+        internal string Theme = "cyan";
     }
 
     internal static object[] Array(object value) { return value as object[] ?? new object[0]; }
@@ -937,7 +1038,7 @@ internal sealed class ApexAiAssistantForm : UserControl
         loader = modLoader;
         model = OllamaRuntime.RecommendedModel();
         confirm = askConfirm;
-        Text = "Apex Client - AI";
+        Text = "Apple Client - AI";
         Size = new Size(930, 690);
         MinimumSize = new Size(780, 600);
         BackColor = Color.FromArgb(12, 17, 27);
@@ -961,7 +1062,7 @@ internal sealed class ApexAiAssistantForm : UserControl
     {
         Label title = new Label
         {
-            Text = "✦ APEX AI",
+            Text = "✦ APPLE AI",
             Font = new Font("Segoe UI", 22, FontStyle.Bold),
             ForeColor = Color.FromArgb(0, 210, 255),
             AutoSize = true
@@ -1675,7 +1776,9 @@ internal sealed class ModrinthBrowserForm : UserControl
             Kind = "download",
             Project = project,
             Version = version,
-            Destination = destination
+            Destination = destination,
+            GameVersion = Convert.ToString(gameVersion.SelectedItem),
+            Loader = Convert.ToString(loader.SelectedItem).ToLowerInvariant()
         };
         Run(operation, "Pobieranie " + file.Name + "...");
     }
@@ -1802,6 +1905,9 @@ internal sealed class ModrinthBrowserForm : UserControl
             {
                 if (File.Exists(temp)) File.Delete(temp);
             }
+            Apex.SaveModMetadata(Path.GetDirectoryName(destination), Path.GetFileName(destination),
+                operation.Project.Slug, operation.Project.Id, operation.Version.Number,
+                operation.GameVersion, operation.Loader);
             e.Result = destination;
         }
         else throw new InvalidOperationException("Nieznana operacja Modrinth.");
@@ -1885,7 +1991,12 @@ internal sealed class ApexForm : Form, IMessageFilter
     private bool consoleVisible;
     private bool rightShiftIsDown;
     private readonly Dictionary<string, Button> navigationButtons = new Dictionary<string, Button>();
+    private readonly Dictionary<Control, string> originalControlTexts = new Dictionary<Control, string>();
     private string activeNavigation;
+    private Apex.LauncherPreferences preferences;
+    private Label topTitle;
+    private Label welcomeLabel;
+    private Label taglineLabel;
     private readonly List<string> consoleHistory = new List<string>();
     private readonly BackgroundWorker worker = new BackgroundWorker();
     private readonly Dictionary<string, Dictionary<string, object>> versionEntries =
@@ -1894,7 +2005,7 @@ internal sealed class ApexForm : Form, IMessageFilter
 
     internal ApexForm()
     {
-        Text = "Apex Client";
+        Text = "Apple Client";
         ClientSize = new Size(1320, 720);
         MinimumSize = new Size(1120, 720);
         StartPosition = FormStartPosition.CenterScreen;
@@ -1904,7 +2015,9 @@ internal sealed class ApexForm : Form, IMessageFilter
         ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
         Directory.CreateDirectory(Apex.Root);
         Directory.CreateDirectory(Apex.Game);
+        preferences = Apex.LoadPreferences();
         BuildUi();
+        ApplyPreferences();
         worker.DoWork += InstallAndLaunch;
         worker.RunWorkerCompleted += Completed;
         Application.AddMessageFilter(this);
@@ -1944,7 +2057,7 @@ internal sealed class ApexForm : Form, IMessageFilter
 
         Panel topBar = new Panel { BackColor = Color.FromArgb(18, 21, 29), Bounds = new Rectangle(78, 0, ClientSize.Width - 78, 58), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
         Controls.Add(topBar);
-        Label topTitle = new Label { Text = "APEX CLIENT     /     LAUNCHPAD", ForeColor = Color.FromArgb(215, 225, 240), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
+        topTitle = new Label { Text = "APPLE CLIENT     /     LAUNCHPAD", ForeColor = Color.FromArgb(215, 225, 240), Font = new Font("Segoe UI", 10, FontStyle.Bold), AutoSize = true };
         topTitle.SetBounds(26, 19, 330, 24);
         topBar.Controls.Add(topTitle);
         accountName.Text = "OFFLINE";
@@ -1961,12 +2074,12 @@ internal sealed class ApexForm : Form, IMessageFilter
         Controls.Add(friends);
         BuildConsoleView();
 
-        Label welcome = new Label { Text = "Welcome to Apex Client", Font = new Font("Segoe UI", 19, FontStyle.Bold), ForeColor = Color.White, AutoSize = true };
-        welcome.SetBounds(24, 18, 540, 34);
-        content.Controls.Add(welcome);
-        Label tagline = new Label { Text = "Wybierz tryb, wersję i uruchom Minecrafta.", ForeColor = Color.Silver, AutoSize = true };
-        tagline.SetBounds(27, 57, 600, 24);
-        content.Controls.Add(tagline);
+        welcomeLabel = new Label { Text = "Welcome to Apple Client", Font = new Font("Segoe UI", 19, FontStyle.Bold), ForeColor = Color.White, AutoSize = true };
+        welcomeLabel.SetBounds(24, 18, 540, 34);
+        content.Controls.Add(welcomeLabel);
+        taglineLabel = new Label { Text = "Wybierz tryb, wersję i uruchom Minecrafta.", ForeColor = Color.Silver, AutoSize = true };
+        taglineLabel.SetBounds(27, 57, 600, 24);
+        content.Controls.Add(taglineLabel);
 
         offlineMode.Text = "◉ OFFLINE";
         offlineMode.Checked = true;
@@ -2064,7 +2177,7 @@ internal sealed class ApexForm : Form, IMessageFilter
         newsHeader.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
         content.Controls.Add(newsHeader);
         Panel news = new Panel { BackColor = Color.FromArgb(21, 29, 42), Bounds = new Rectangle(24, content.Height - 32, mainWidth - 48, 28), Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right };
-        Label newsText = new Label { Text = "Apex Client  •  Minecraft Java  -  wybierz wydanie i uruchom grę.", ForeColor = Color.FromArgb(202, 216, 231), AutoSize = false };
+        Label newsText = new Label { Text = "Apple Client  •  Minecraft Java  -  wybierz wydanie i uruchom grę.", ForeColor = Color.FromArgb(202, 216, 231), AutoSize = false };
         newsText.SetBounds(18, 5, news.Width - 36, 20);
         news.Controls.Add(newsText);
         content.Controls.Add(news);
@@ -2122,11 +2235,18 @@ internal sealed class ApexForm : Form, IMessageFilter
     private void SetActiveNavigation(string key)
     {
         activeNavigation = key;
+        bool light = preferences != null && preferences.Theme == "light";
+        Color selectedBackground = light ? Color.FromArgb(199, 233, 241) :
+            (preferences != null && preferences.Theme == "violet" ? Color.FromArgb(53, 39, 76) : Color.FromArgb(24, 67, 83));
+        Color selectedForeground = preferences != null && preferences.Theme == "violet"
+            ? Color.FromArgb(185, 150, 255) : Color.FromArgb(0, 150, 180);
         foreach (KeyValuePair<string, Button> entry in navigationButtons)
         {
             bool selected = entry.Key == activeNavigation;
-            entry.Value.BackColor = selected ? Color.FromArgb(24, 67, 83) : Color.FromArgb(15, 18, 25);
-            entry.Value.ForeColor = selected ? Color.FromArgb(0, 210, 255) : Color.FromArgb(170, 181, 195);
+            entry.Value.BackColor = selected ? selectedBackground :
+                (light ? Color.FromArgb(230, 236, 242) : Color.FromArgb(15, 18, 25));
+            entry.Value.ForeColor = selected ? selectedForeground :
+                (light ? Color.FromArgb(70, 82, 94) : Color.FromArgb(170, 181, 195));
         }
     }
 
@@ -2172,6 +2292,7 @@ internal sealed class ApexForm : Form, IMessageFilter
             content.Controls.Add(modsView);
         }
         else modsView.SelectGameVersion(gameVersion);
+        ApplyThemeControls(modsView);
         foreach (Control control in content.Controls)
             control.Visible = false;
         modsView.Visible = true;
@@ -2201,6 +2322,7 @@ internal sealed class ApexForm : Form, IMessageFilter
             content.Controls.Add(aiView);
         }
         else aiView.SelectGameVersion(gameVersion);
+        ApplyThemeControls(aiView);
         foreach (Control control in content.Controls)
             control.Visible = false;
         aiView.Visible = true;
@@ -2214,7 +2336,7 @@ internal sealed class ApexForm : Form, IMessageFilter
     {
         Func<bool> ask = delegate
         {
-            return MessageBox.Show(this, message, "Apex AI - potwierdź działanie",
+            return MessageBox.Show(this, message, "Apple AI - potwierdź działanie",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes;
         };
         if (InvokeRequired) return (bool)Invoke(ask);
@@ -2223,8 +2345,229 @@ internal sealed class ApexForm : Form, IMessageFilter
 
     private void ShowSettings()
     {
-        MessageBox.Show(this, "Tryb logowania i wersja gry są dostępne w Launchpad.\n\nFolder danych:\n" + Apex.Root,
-            "Ustawienia Apex Client", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        using (Form dialog = new Form())
+        {
+            dialog.Text = preferences.Language == "pl" ? "Ustawienia Apple Client" : "Apple Client Settings";
+            dialog.ClientSize = new Size(520, 340);
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.BackColor = preferences.Theme == "light" ? Color.FromArgb(244, 247, 250) : Color.FromArgb(13, 19, 29);
+            dialog.ForeColor = preferences.Theme == "light" ? Color.FromArgb(24, 33, 45) : Color.FromArgb(230, 239, 249);
+            dialog.Font = new Font("Segoe UI", 9F);
+
+            bool polish = preferences.Language == "pl";
+            Label heading = new Label
+            {
+                Text = polish ? "USTAWIENIA LAUNCHERA" : "LAUNCHER SETTINGS",
+                Bounds = new Rectangle(22, 16, 360, 28),
+                Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                ForeColor = preferences.Theme == "light" ? Color.FromArgb(0, 105, 135) :
+                    (preferences.Theme == "violet" ? Color.FromArgb(185, 150, 255) : Color.FromArgb(0, 210, 255))
+            };
+            dialog.Controls.Add(heading);
+
+            Label languageLabel = new Label { Text = polish ? "Język launchera" : "Launcher language", Bounds = new Rectangle(24, 62, 200, 24) };
+            Label ramLabel = new Label { Text = polish ? "Pamięć RAM dla Minecrafta (GB)" : "Minecraft memory (GB)", Bounds = new Rectangle(24, 115, 260, 24) };
+            Label themeLabel = new Label { Text = polish ? "Motyw" : "Theme", Bounds = new Rectangle(24, 168, 200, 24) };
+            Label folderLabel = new Label
+            {
+                Text = (polish ? "Folder danych - zachowany dla zgodności:" : "Data folder - kept for compatibility:") +
+                    Environment.NewLine + Apex.Root,
+                Bounds = new Rectangle(24, 222, 468, 46),
+                ForeColor = dialog.ForeColor
+            };
+            dialog.Controls.Add(languageLabel);
+            dialog.Controls.Add(ramLabel);
+            dialog.Controls.Add(themeLabel);
+            dialog.Controls.Add(folderLabel);
+
+            ComboBox language = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(300, 58, 190, 28) };
+            language.Items.AddRange(new object[] { "Polski", "English" });
+            language.SelectedIndex = preferences.Language == "en" ? 1 : 0;
+            ComboBox theme = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(300, 164, 190, 28) };
+            theme.Items.AddRange(new object[] { "Cyan - dark", "Violet - dark", "Light" });
+            theme.SelectedIndex = preferences.Theme == "violet" ? 1 : (preferences.Theme == "light" ? 2 : 0);
+            NumericUpDown ram = new NumericUpDown
+            {
+                Minimum = 2,
+                Maximum = Apex.MaximumRamGb,
+                Value = Math.Max(2, Math.Min(Apex.MaximumRamGb, preferences.RamGb)),
+                Bounds = new Rectangle(300, 111, 100, 28),
+                TextAlign = HorizontalAlignment.Center
+            };
+            dialog.Controls.Add(language);
+            dialog.Controls.Add(theme);
+            dialog.Controls.Add(ram);
+
+            Button save = new Button
+            {
+                Text = polish ? "ZAPISZ" : "SAVE",
+                Bounds = new Rectangle(278, 286, 104, 36),
+                BackColor = preferences.Theme == "light" ? Color.FromArgb(0, 118, 148) :
+                    (preferences.Theme == "violet" ? Color.FromArgb(103, 76, 160) : Color.FromArgb(0, 111, 137)),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            save.FlatAppearance.BorderSize = 0;
+            save.Click += delegate
+            {
+                Apex.LauncherPreferences updated = new Apex.LauncherPreferences
+                {
+                    Language = language.SelectedIndex == 1 ? "en" : "pl",
+                    Theme = theme.SelectedIndex == 1 ? "violet" : (theme.SelectedIndex == 2 ? "light" : "cyan"),
+                    RamGb = Decimal.ToInt32(ram.Value)
+                };
+                try
+                {
+                    Apex.SavePreferences(updated);
+                    preferences = updated;
+                    ApplyPreferences();
+                    dialog.Close();
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(dialog, exception.Message,
+                        updated.Language == "pl" ? "Błąd ustawień" : "Settings error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
+            Button cancel = new Button
+            {
+                Text = polish ? "ANULUJ" : "CANCEL",
+                Bounds = new Rectangle(390, 286, 100, 36),
+                BackColor = preferences.Theme == "light" ? Color.FromArgb(220, 227, 234) : Color.FromArgb(24, 31, 43),
+                ForeColor = dialog.ForeColor,
+                FlatStyle = FlatStyle.Flat
+            };
+            cancel.FlatAppearance.BorderSize = 0;
+            cancel.Click += delegate { dialog.Close(); };
+            dialog.Controls.Add(save);
+            dialog.Controls.Add(cancel);
+            dialog.AcceptButton = save;
+            dialog.CancelButton = cancel;
+            dialog.ShowDialog(this);
+        }
+    }
+
+    private void ApplyPreferences()
+    {
+        bool polish = preferences.Language == "pl";
+        Text = "Apple Client";
+        topTitle.Text = polish ? "APPLE CLIENT     /     LAUNCHPAD" : "APPLE CLIENT     /     LAUNCHPAD";
+        welcomeLabel.Text = polish ? "Witaj w Apple Client" : "Welcome to Apple Client";
+        taglineLabel.Text = polish ? "Wybierz tryb, wersję i uruchom Minecrafta." :
+            "Choose a mode and version, then launch Minecraft.";
+        if (navigationButtons.ContainsKey("home")) navigationButtons["home"].Text = polish ? "⌂\nHOME" : "⌂\nHOME";
+        if (navigationButtons.ContainsKey("game")) navigationButtons["game"].Text = polish ? "▶\nGRA" : "▶\nGAME";
+        if (navigationButtons.ContainsKey("mods")) navigationButtons["mods"].Text = "▦\nMODS";
+        if (navigationButtons.ContainsKey("settings")) navigationButtons["settings"].Text = "⚙\nSET";
+        if (navigationButtons.ContainsKey("ai")) navigationButtons["ai"].Text = "✦\nAI";
+        if (navigationButtons.ContainsKey("console")) navigationButtons["console"].Text = polish ? "▣\nKONSOLA" : "▣\nCONSOLE";
+        play.Text = polish ? "▶  INSTALUJ I GRAJ" : "▶  INSTALL AND PLAY";
+        if (status.Text == "Pobieram oficjalny manifest wersji..." ||
+            status.Text == "Loading the official game version manifest...")
+            status.Text = polish ? "Pobieram oficjalny manifest wersji..." : "Loading the official game version manifest...";
+        ApplyLauncherLanguage(this, polish);
+        UpdateModeControls();
+        ApplyThemeControls(this);
+        if (!String.IsNullOrEmpty(activeNavigation)) SetActiveNavigation(activeNavigation);
+    }
+
+    private void ApplyLauncherLanguage(Control parent, bool polish)
+    {
+        foreach (Control control in parent.Controls)
+        {
+            if (control == status || control == accountName || control == accountStatus || control == signOut) continue;
+            if (!originalControlTexts.ContainsKey(control))
+                originalControlTexts.Add(control, control.Text);
+            control.Text = LocalizeLauncherText(originalControlTexts[control], polish);
+            if (control.HasChildren) ApplyLauncherLanguage(control, polish);
+        }
+    }
+
+    private static string LocalizeLauncherText(string text, bool polish)
+    {
+        switch (text)
+        {
+            case "APPLE CLIENT     /     LAUNCHPAD": return "APPLE CLIENT     /     LAUNCHPAD";
+            case "Welcome to Apple Client": return polish ? "Witaj w Apple Client" : text;
+            case "Witaj w Apple Client": return polish ? text : "Welcome to Apple Client";
+            case "Wybierz tryb, wersję i uruchom Minecrafta.": return polish ? text : "Choose a mode and version, then launch Minecraft.";
+            case "Choose a mode and version, then launch Minecraft.": return polish ? "Wybierz tryb, wersję i uruchom Minecrafta." : text;
+            case "⌂\nHOME": return "⌂\nHOME";
+            case "▶\nGRA": return polish ? text : "▶\nGAME";
+            case "▶\nGAME": return polish ? "▶\nGRA" : text;
+            case "▦\nMODS": return "▦\nMODS";
+            case "⚙\nSET": return "⚙\nSET";
+            case "✦\nAI": return "✦\nAI";
+            case "▣\nKONSOLA": return polish ? text : "▣\nCONSOLE";
+            case "▣\nCONSOLE": return polish ? "▣\nKONSOLA" : text;
+            case "◉ OFFLINE": return "◉ OFFLINE";
+            case "◎ ONLINE": return "◎ ONLINE";
+            case "WERSJA MINECRAFTA": return polish ? text : "MINECRAFT VERSION";
+            case "GRACZ OFFLINE": return polish ? text : "OFFLINE PLAYER";
+            case "YOUR NEXT ADVENTURE": return polish ? "TWOJA NASTĘPNA PRZYGODA" : text;
+            case "TWOJA NASTĘPNA PRZYGODA": return polish ? text : "YOUR NEXT ADVENTURE";
+            case "Minecraft 1.8.9+  •  tylko stabilne wydania  •  mody instalowane według zgodności":
+                return polish ? text : "Minecraft 1.8.9+  •  stable releases  •  mods matched to the game version";
+            case "▶  INSTALUJ I GRAJ": return polish ? text : "▶  INSTALL AND PLAY";
+            case "▶  INSTALL AND PLAY": return polish ? "▶  INSTALUJ I GRAJ" : text;
+            case "APEX QUICK ACCESS": return polish ? "APPLE - SZYBKI DOSTĘP" : "APPLE QUICK ACCESS";
+            case "APPLE - SZYBKI DOSTĘP": return polish ? text : "APPLE QUICK ACCESS";
+            case "▣  OTWÓRZ FOLDER GRY": return polish ? text : "▣  OPEN GAME FOLDER";
+            case "▣  OPEN GAME FOLDER": return polish ? "▣  OTWÓRZ FOLDER GRY" : text;
+            case "◆  PRZEGLĄDAJ MODRINTH": return polish ? text : "◆  BROWSE MODRINTH";
+            case "◆  BROWSE MODRINTH": return polish ? "◆  PRZEGLĄDAJ MODRINTH" : text;
+            case "✦  APEX AI": return "✦  APPLE AI";
+            case "✦  APPLE AI": return "✦  APPLE AI";
+            case "LATEST NEWS": return polish ? "OSTATNIE AKTUALNOŚCI" : text;
+            case "OSTATNIE AKTUALNOŚCI": return polish ? text : "LATEST NEWS";
+            case "Apple Client  •  Minecraft Java  -  wybierz wydanie i uruchom grę.":
+                return polish ? "Apple Client  •  Minecraft Java  -  wybierz wydanie i uruchom grę." : "Apple Client  •  Minecraft Java  -  choose a version and launch.";
+            case "FRIENDS": return polish ? "ZNAJOMI" : text;
+            case "ZNAJOMI": return polish ? text : "FRIENDS";
+            case "APPLE SOCIAL": return polish ? "APPLE - SPOŁECZNOŚĆ" : "APPLE SOCIAL";
+            case "APEX SOCIAL": return polish ? "APPLE - SPOŁECZNOŚĆ" : "APPLE SOCIAL";
+            case "APPLE - SPOŁECZNOŚĆ": return polish ? text : "APPLE SOCIAL";
+            case "Lista znajomych nie jest jeszcze podłączona.\n\nLogowanie Microsoft służy do uruchomienia gry i nie udostępnia listy znajomych.":
+                return polish ? text : "The friends list is not connected yet.\n\nMicrosoft sign-in launches the game and does not provide a friends list.";
+            case "Ustawienia launchera": return polish ? text : "Launcher settings";
+            case "Launcher settings": return polish ? "Ustawienia launchera" : text;
+            case "Pobieram oficjalny manifest wersji...": return polish ? text : "Loading the official game version manifest...";
+            case "Loading the official game version manifest...": return polish ? "Pobieram oficjalny manifest wersji..." : text;
+            default: return text;
+        }
+    }
+
+    private void ApplyThemeControls(Control parent)
+    {
+        bool light = preferences.Theme == "light";
+        Color background = light ? Color.FromArgb(239, 243, 247) : Color.FromArgb(12, 17, 27);
+        Color foreground = light ? Color.FromArgb(28, 38, 50) : Color.FromArgb(230, 239, 249);
+        Color input = light ? Color.White : Color.FromArgb(25, 31, 42);
+        if (parent is Form || parent is Panel || parent is UserControl)
+            parent.BackColor = background;
+        parent.ForeColor = foreground;
+        foreach (Control control in parent.Controls)
+        {
+            if (control is Panel) control.BackColor = light ? Color.FromArgb(230, 236, 242) : background;
+            if (control is TextBox || control is ComboBox || control is ListBox || control is RichTextBox)
+            {
+                control.BackColor = input;
+                control.ForeColor = foreground;
+            }
+            else if (control is Label || control is RadioButton)
+                control.ForeColor = foreground;
+            else if (control is Button)
+            {
+                control.BackColor = light ? Color.FromArgb(220, 228, 236) :
+                    (preferences.Theme == "violet" ? Color.FromArgb(36, 30, 51) : Color.FromArgb(24, 31, 43));
+                control.ForeColor = foreground;
+            }
+            if (control.HasChildren) ApplyThemeControls(control);
+        }
     }
 
     private void BuildConsoleView()
@@ -2339,13 +2682,17 @@ internal sealed class ApexForm : Form, IMessageFilter
     private void UpdateModeControls()
     {
         bool online = onlineMode.Checked;
+        bool polish = preferences == null || preferences.Language == "pl";
         username.Visible = !online;
         offlinePlayerLabel.Visible = !online;
         accountStatus.Visible = true;
         accountStatus.Text = online
-            ? (currentAccount == null ? "Zaloguj się kontem Microsoft" : "Połączono konto Microsoft")
-            : "Offline: lokalna nazwa gracza";
+            ? (currentAccount == null
+                ? (polish ? "Zaloguj się kontem Microsoft" : "Sign in with a Microsoft account")
+                : (polish ? "Połączono konto Microsoft" : "Microsoft account connected"))
+            : (polish ? "Offline: lokalna nazwa gracza" : "Offline: local player name");
         accountName.Text = currentAccount == null ? (online ? "ZALOGUJ SIĘ" : "OFFLINE") : currentAccount.Name;
+        signOut.Text = polish ? "↪ Wyloguj" : "↪ Sign out";
         signIn.Visible = online;
         signIn.Enabled = online && !worker.IsBusy;
         signOut.Visible = online && currentAccount != null;
@@ -2633,29 +2980,248 @@ internal sealed class ApexForm : Form, IMessageFilter
         if (File.Exists(modSource))
             InstallVerifiedMod(modSource, Path.Combine(modsDirectory, "ApexClientHud.jar"));
         else
-            Report("Dla " + id + " nie ma skompilowanego HUD Apex; instaluję zgodne mody Fabric.");
+            Report("Dla " + id + " nie ma skompilowanego HUD Apple; instaluję zgodne mody Fabric.");
 
+        HashSet<string> declinedMigrations;
+        List<string> approvedMigrations = CheckForModMigrations(id, modsDirectory, out declinedMigrations);
         HashSet<string> installedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         List<string> installedDefaults = new List<string>();
         List<string> skippedDefaults = new List<string>();
-        string[] defaults = new string[]
+        List<string> defaults = new List<string>
         {
-            "fabric-api", "modmenu", "in-game-account-switcher", "iris", "sodium"
+            "fabric-api", "modmenu", "in-game-account-switcher", "iris", "sodium",
+            "zoomify", "freelook", "shadeandsaturation"
         };
+        foreach (string migratedSlug in approvedMigrations)
+            if (!defaults.Exists(delegate(string current)
+                { return String.Equals(current, migratedSlug, StringComparison.OrdinalIgnoreCase); }))
+                defaults.Add(migratedSlug);
         foreach (string slug in defaults)
         {
-            if (InstallModrinthProject(slug, id, "fabric", modsDirectory, installedProjects, true, ""))
+            bool required = String.Equals(slug, "fabric-api", StringComparison.OrdinalIgnoreCase);
+            if (!required && declinedMigrations.Contains(slug))
+            {
+                skippedDefaults.Add(slug + " (pominięto na prośbę użytkownika)");
+                continue;
+            }
+            if (InstallModrinthProject(slug, id, "fabric", modsDirectory, installedProjects, !required, ""))
                 installedDefaults.Add(slug);
             else
                 skippedDefaults.Add(slug);
         }
+        BackupReplacedProfileMods(modsDirectory, id, approvedMigrations);
 
         string modSummary = installedDefaults.Count == 0 ? "brak" : String.Join(", ", installedDefaults.ToArray());
         string skippedSummary = skippedDefaults.Count == 0 ? "brak" : String.Join(", ", skippedDefaults.ToArray());
         Report("Fabric " + loaderVersion + " gotowy. Zainstalowano: " + modSummary +
-            ". Brak zgodnej wersji: " + skippedSummary + ". HUD Apex: " +
+            ". Brak zgodnej wersji: " + skippedSummary + ". HUD Apple: " +
             (File.Exists(modSource) ? "dostępny." : "brak buildu dla tej wersji."));
         return version;
+    }
+
+    private List<string> CheckForModMigrations(string targetVersion, string targetModsDirectory,
+        out HashSet<string> declined)
+    {
+        declined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        List<string> accepted = new List<string>();
+        string profiles = Path.Combine(Apex.Game, "profiles");
+        if (!Directory.Exists(profiles)) return accepted;
+
+        string[] knownProjects =
+        {
+            "sodium", "iris", "modmenu", "in-game-account-switcher", "zoomify", "freelook", "shadeandsaturation"
+        };
+        Dictionary<string, List<string>> sources = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        string targetPath = Path.GetFullPath(Path.Combine(profiles, targetVersion));
+        foreach (string profile in Directory.GetDirectories(profiles))
+        {
+            bool isTargetProfile = String.Equals(Path.GetFullPath(profile), targetPath, StringComparison.OrdinalIgnoreCase);
+            string sourceVersion = isTargetProfile ? "target-" + targetVersion : Path.GetFileName(profile);
+            string sourceMods = Path.Combine(profile, "mods");
+            if (!Directory.Exists(sourceMods)) continue;
+            string[] jars = Directory.GetFiles(sourceMods, "*.jar", SearchOption.TopDirectoryOnly);
+            foreach (string jar in jars)
+            {
+                string metadataPath = jar + ".apple.json";
+                List<string> identifiedSlugs = new List<string>();
+                if (File.Exists(metadataPath))
+                {
+                    Dictionary<string, object> metadata;
+                    try
+                    {
+                        metadata = Apex.Dict(Apex.Json.DeserializeObject(File.ReadAllText(metadataPath, Encoding.UTF8)));
+                    }
+                    catch (Exception exception)
+                    {
+                        throw new InvalidDataException("Nie można odczytać metadanych moda " + metadataPath, exception);
+                    }
+                    string slug = Apex.Str(metadata.ContainsKey("slug") ? metadata["slug"] : null, "");
+                    string installedGameVersion = Apex.Str(
+                        metadata.ContainsKey("gameVersion") ? metadata["gameVersion"] : null, "");
+                    if (isTargetProfile && String.Equals(installedGameVersion, targetVersion, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (IsSafeModrinthSlug(slug)) identifiedSlugs.Add(slug);
+                }
+                else
+                {
+                    string normalizedFilename = NormalizeModName(Path.GetFileNameWithoutExtension(jar));
+                    foreach (string slug in knownProjects)
+                        if (normalizedFilename.Contains(NormalizeModName(slug)))
+                            identifiedSlugs.Add(slug);
+                }
+                foreach (string slug in identifiedSlugs)
+                {
+                    List<string> versions;
+                    if (!sources.TryGetValue(slug, out versions))
+                    {
+                        versions = new List<string>();
+                        sources.Add(slug, versions);
+                    }
+                    if (!versions.Contains(sourceVersion)) versions.Add(sourceVersion);
+                }
+            }
+        }
+        if (sources.Count == 0) return accepted;
+
+        List<string> needsDecision = new List<string>();
+        string decisionRoot = Path.Combine(Apex.Root, "upgrade-decisions", targetVersion);
+        foreach (KeyValuePair<string, List<string>> entry in sources)
+        {
+            bool allDecided = true;
+            bool hasDecline = false;
+            foreach (string sourceVersion in entry.Value)
+            {
+                string marker = Path.Combine(decisionRoot, sourceVersion + "--" + entry.Key + ".txt");
+                if (!File.Exists(marker))
+                {
+                    allDecided = false;
+                    continue;
+                }
+                string answer = File.ReadAllText(marker, Encoding.UTF8).Trim();
+                if (answer == "no") hasDecline = true;
+                else if (answer != "yes")
+                    throw new InvalidDataException("Nieprawidłowa decyzja aktualizacji moda: " + marker);
+            }
+            if (allDecided)
+            {
+                if (hasDecline) declined.Add(entry.Key);
+                else accepted.Add(entry.Key);
+                continue;
+            }
+
+            string query = "?game_versions=" + Uri.EscapeDataString(Apex.Json.Serialize(new[] { targetVersion })) +
+                "&loaders=" + Uri.EscapeDataString(Apex.Json.Serialize(new[] { "fabric" }));
+            object[] available = Apex.Array(Apex.GetModrinthJson(
+                "https://api.modrinth.com/v2/project/" + Uri.EscapeDataString(entry.Key) + "/version" + query));
+            if (available.Length == 0)
+            {
+                Report("Pominięto migrację " + entry.Key + " - brak wersji dla Minecrafta " + targetVersion + ".");
+                continue;
+            }
+            needsDecision.Add(entry.Key);
+        }
+        if (needsDecision.Count == 0) return accepted;
+
+        StringBuilder prompt = new StringBuilder();
+        prompt.Append("Znaleziono mody w profilach innych wersji Minecrafta. Zainstalować zgodne wydania ");
+        prompt.Append("(aktualizację lub downgrade) dla Minecrafta ").Append(targetVersion).Append("?\n\n");
+        foreach (string slug in needsDecision)
+        {
+            prompt.Append("• ").Append(slug).Append(" - z ");
+            List<string> describedSources = new List<string>();
+            foreach (string source in sources[slug])
+                describedSources.Add(source.StartsWith("target-", StringComparison.Ordinal)
+                    ? "bieżącego profilu (wersja nieznana lub niezgodna)"
+                    : source);
+            prompt.Append(String.Join(", ", describedSources.ToArray())).Append("\n");
+        }
+        prompt.Append("\nWybór zostanie zapamiętany dla tych profili. Dotychczasowe profile pozostaną bez zmian.");
+        Func<bool> ask = delegate
+        {
+            return MessageBox.Show(this, prompt.ToString(), "Apple Client - zgodność modów",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        };
+        bool acceptedByUser = InvokeRequired ? (bool)Invoke(ask) : ask();
+        Directory.CreateDirectory(decisionRoot);
+        foreach (string slug in needsDecision)
+        {
+            foreach (string sourceVersion in sources[slug])
+            {
+                string marker = Path.Combine(decisionRoot, sourceVersion + "--" + slug + ".txt");
+                File.WriteAllText(marker, acceptedByUser ? "yes" : "no", new UTF8Encoding(false));
+            }
+            if (acceptedByUser) accepted.Add(slug);
+            else declined.Add(slug);
+        }
+        if (acceptedByUser)
+            Report("Zainstaluję zgodne wydania wybranych modów do profilu " + targetVersion + ".");
+        else
+            Report("Pominięto migrację modów; pozostałe profile nie zostały zmienione.");
+        return accepted;
+    }
+
+    private static void BackupReplacedProfileMods(string modsDirectory, string gameVersion,
+        List<string> migratedSlugs)
+    {
+        if (migratedSlugs.Count == 0 || !Directory.Exists(modsDirectory)) return;
+        string backupDirectory = Path.Combine(Path.GetDirectoryName(modsDirectory), "mod-backups");
+        foreach (string jar in Directory.GetFiles(modsDirectory, "*.jar", SearchOption.TopDirectoryOnly))
+        {
+            string metadataPath = jar + ".apple.json";
+            bool hasMetadata = File.Exists(metadataPath);
+            if (hasMetadata)
+            {
+                Dictionary<string, object> metadata =
+                    Apex.Dict(Apex.Json.DeserializeObject(File.ReadAllText(metadataPath, Encoding.UTF8)));
+                string slug = Apex.Str(metadata.ContainsKey("slug") ? metadata["slug"] : null, "");
+                string installedGameVersion = Apex.Str(
+                    metadata.ContainsKey("gameVersion") ? metadata["gameVersion"] : null, "");
+                if (!migratedSlugs.Exists(delegate(string migrated)
+                        { return String.Equals(migrated, slug, StringComparison.OrdinalIgnoreCase); }) ||
+                    String.Equals(installedGameVersion, gameVersion, StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+            else
+            {
+                string normalizedFilename = NormalizeModName(Path.GetFileNameWithoutExtension(jar));
+                if (!migratedSlugs.Exists(delegate(string migrated)
+                        { return normalizedFilename.Contains(NormalizeModName(migrated)); }))
+                    continue;
+            }
+
+            Directory.CreateDirectory(backupDirectory);
+            string backupName = Path.GetFileName(jar) + "." + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff",
+                CultureInfo.InvariantCulture) + ".bak";
+            string backupJar = Path.Combine(backupDirectory, backupName);
+            File.Move(jar, backupJar);
+            try
+            {
+                if (hasMetadata) File.Move(metadataPath, backupJar + ".apple.json");
+            }
+            catch
+            {
+                File.Move(backupJar, jar);
+                throw;
+            }
+        }
+    }
+
+    private static bool IsSafeModrinthSlug(string slug)
+    {
+        if (String.IsNullOrWhiteSpace(slug)) return false;
+        foreach (char character in slug)
+            if (!Char.IsLetterOrDigit(character) && character != '-')
+                return false;
+        return true;
+    }
+
+    private static string NormalizeModName(string name)
+    {
+        StringBuilder normalized = new StringBuilder();
+        foreach (char character in name)
+            if (Char.IsLetterOrDigit(character))
+                normalized.Append(Char.ToLowerInvariant(character));
+        return normalized.ToString();
     }
 
     private bool InstallModrinthProject(string slug, string gameVersion, string modLoader, string modsDirectory,
@@ -2771,7 +3337,11 @@ internal sealed class ApexForm : Form, IMessageFilter
                     actual = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant();
                 if (!String.Equals(actual, expectedSha512, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Nie zgadza się SHA-512 moda " + slug + "; plik odrzucono.");
-                if (File.Exists(destination)) File.Replace(temporary, destination, null);
+                if (File.Exists(destination))
+                {
+                    BackupExistingModJar(destination, modsDirectory);
+                    File.Replace(temporary, destination, null);
+                }
                 else File.Move(temporary, destination);
             }
             finally
@@ -2780,6 +3350,11 @@ internal sealed class ApexForm : Form, IMessageFilter
             }
             Report("Zainstalowano " + Apex.Str(project.ContainsKey("title") ? project["title"] : null, slug) + ".");
         }
+        Apex.SaveModMetadata(modsDirectory, selectedFilename,
+            Apex.Str(project.ContainsKey("slug") ? project["slug"] : null, slug),
+            projectId,
+            Apex.Str(selected.ContainsKey("version_number") ? selected["version_number"] : null, "unknown"),
+            gameVersion, modLoader);
         installedProjects.Add(projectId);
 
         foreach (object rawDependency in Apex.Array(selected.ContainsKey("dependencies") ? selected["dependencies"] : null))
@@ -2794,6 +3369,29 @@ internal sealed class ApexForm : Form, IMessageFilter
                     Apex.Str(dependency.ContainsKey("version_id") ? dependency["version_id"] : null, ""));
         }
         return true;
+    }
+
+    private static void BackupExistingModJar(string jarPath, string modsDirectory)
+    {
+        string backupDirectory = Path.Combine(Path.GetDirectoryName(modsDirectory), "mod-backups");
+        Directory.CreateDirectory(backupDirectory);
+        string backupName = Path.GetFileName(jarPath) + "." + DateTime.UtcNow.ToString("yyyyMMddHHmmssfff",
+            CultureInfo.InvariantCulture) + ".bak";
+        string backupPath = Path.Combine(backupDirectory, backupName);
+        File.Copy(jarPath, backupPath, false);
+        string metadataPath = jarPath + ".apple.json";
+        if (File.Exists(metadataPath))
+        {
+            try
+            {
+                File.Copy(metadataPath, backupPath + ".apple.json", false);
+            }
+            catch
+            {
+                File.Delete(backupPath);
+                throw;
+            }
+        }
     }
 
     private static bool ArrayContains(object[] values, string expected)
@@ -2942,6 +3540,11 @@ internal sealed class ApexForm : Form, IMessageFilter
             gameArgs.AddRange(SplitArgs(Replace(Apex.Str(version["minecraftArguments"], ""), values)));
         else
             throw new InvalidDataException("Plik wersji nie zawiera argumentów gry.");
+
+        for (int i = jvm.Count - 1; i >= 0; i--)
+            if (jvm[i].StartsWith("-Xmx", StringComparison.OrdinalIgnoreCase))
+                jvm.RemoveAt(i);
+        jvm.Add("-Xmx" + Apex.LoadPreferences().RamGb.ToString(CultureInfo.InvariantCulture) + "G");
 
         if (!ContainsClassPath(jvm))
         {

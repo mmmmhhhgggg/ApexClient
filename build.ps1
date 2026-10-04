@@ -30,4 +30,4 @@ if ($LASTEXITCODE -ne 0) { throw "Apex Fabric mod build for Minecraft 1.21.11 fa
 $legacyJar = Join-Path $legacyProject "build\libs\apex-hud-1.0.0.jar"
 if (-not (Test-Path $legacyJar)) { throw "The Apex Fabric mod JAR for Minecraft 1.21.11 was not produced: $legacyJar" }
 Copy-Item -Force $legacyJar (Join-Path $modOutput "ApexClientHud-1.21.11.jar")
-Write-Host "Built Apex Client: $launcher"
+Write-Host "Built Apple Client: $launcher"
